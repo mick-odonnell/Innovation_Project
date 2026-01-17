@@ -1,0 +1,132 @@
+---
+title: "Sleeping Around"
+format: html
+editor: visual
+---
+
+# Introduction
+
+```{r setup}
+library(tidyverse)
+library(janitor)
+library(sf)
+library(stringi)
+set.seed(1225)
+
+# load data
+garda_stations <- read_csv("data/garda_stations.csv")
+accomm_names <- read_csv("data/provider_names.csv") |> 
+  # generate a unique id for each accommodation that is not just based on row number
+  mutate(accomm_id = paste0("ACCOM_", str_pad(row_number(), width = 4, pad = "0")))
+```
+
+## Client List
+
+Generate a client list of 21000 clients, each assigned to one of the 450 accommodation locations.
+
+```{r setup-locations}
+
+accomm_locations <- garda_stations |> 
+  select(ADDRESS, LONGITUDE, LATITUDE) |>
+  bind_cols(accomm_names)
+
+#create a list of 21000 clients, with the following information; ID, Name, Family Unit ID, Family_Unit_Head_Status, Accommodation_Name
+client_list <- read_csv("data/clients_21000.csv") |> 
+  clean_names()
+
+# randomly assign accommodation by family unit
+client_list |> 
+  distinct(family_unit_id) |> 
+  mutate(accommodation_name = sample(accomm_locations$accomm_name, n(), replace = TRUE)) -> accomm_assignment
+
+# join accommodation names to client list
+client_list |> 
+  left_join(accomm_assignment, by = c("family_unit_id" = "family_unit_id")) -> client_list
+
+
+client_list |>
+  group_by(family_unit_id) |> 
+  mutate(family_member_count = n()) |> 
+  ungroup() -> client_full
+```
+
+## Generate Sample Datapoints for the PlaceKeeper App
+
+Each of the 21,000 clients who have Family_Unit_Head_Status as true, should have a row for every day in January 2026, listing their dependents and the accommodation they are staying at.
+
+```{r generate-datapoints}
+# create all dates for January 2026
+january_dates <- seq(as.Date("2026-01-01"), as.Date("2026-01-31"), by = "day")
+
+client_full |> 
+  filter(family_unit_head_status == "Yes") |>
+  # create a row for all of these for each date in January
+  crossing(date = january_dates) |> 
+  mutate(time = sample(5:12, n(), replace = TRUE),
+         minutes = sample(0:59, n(), replace = TRUE),
+         timestamp = as.POSIXct(paste(date, sprintf("%02d:%02d:00", time, minutes)), format="%Y-%m-%d %H:%M:%S")) |> 
+  select(-c(date, time, minutes)) -> client_timestamps
+
+client_timestamps |> 
+  left_join(accomm_locations, by = c("accommodation_name" = "accomm_name")) |>
+  st_as_sf(coords = c("LONGITUDE", "LATITUDE"), crs = 4326) |> 
+  st_transform(2157) |> 
+  # create an x and y column for the geometry
+  mutate(x = st_coordinates(geometry)[,1],
+         y = st_coordinates(geometry)[,2]) |> 
+  st_set_geometry(NULL) |> 
+  # add a random jitter of a radius of between 10 and 200m to the x and y coordinates to simulate real sensor data, with a log linear distance from the origin point
+  rowwise() |>
+  mutate(
+    angle = runif(1, 0, 2 * pi),
+    radius = exp(runif(1, log(10), log(200))),
+    x = x + radius * cos(angle),
+    y = y + radius * sin(angle)
+  ) |>
+  ungroup() -> client_timestamps_p1
+
+n_days <- client_timestamps_p1 |> 
+  distinct(as.Date(timestamp)) |> 
+  nrow()
+
+clients <- client_timestamps_p1 %>%
+  distinct(id) %>%
+  mutate(
+    group = sample(
+      x = c("daily","miss_1","miss_2_5","miss_6_14","miss_15_25", "miss_26_30", "miss_all"),
+      size = n(),
+      replace = TRUE,
+      prob = c(0.05, 0.05, 0.70, 0.15, 0.025, 0.02, 0.005)
+    ),
+    miss_days = case_when(
+      group == "daily"      ~ 0,
+      group == "miss_1"     ~ 1,
+      group == "miss_2_5"   ~ sample(2:5,  n(), replace = TRUE),
+      group == "miss_6_14"  ~ sample(6:14, n(), replace = TRUE),
+      group == "miss_15_25" ~ sample(15:25,n(), replace = TRUE),
+      group == "miss_26_30" ~ sample(26:30,n(), replace = TRUE),
+      group == "miss_all" ~ 31
+    ),
+    p_respond = pmax(0, 1 - (miss_days / n_days))
+  )
+
+set.seed(123)
+
+client_timestamps_p1 %>%
+  group_by(id) %>%
+  nest() |> 
+  left_join(clients, by = "id") |> 
+  mutate(data = map2(data, p_respond, ~ .x %>% filter(runif(n()) < .y))) |> 
+  select(-group, -miss_days, -p_respond) |> 
+  unnest(cols = c(data)) -> real_responses
+
+
+real_responses |> 
+  # convert back to sf object
+  st_as_sf(coords = c("x", "y"), crs = 2157) |> 
+  st_transform(4326) -> client_timestamps_sf
+
+
+# write to file
+st_write(client_timestamps_sf, "data/client_timestamps_january_2026.geojson", delete_dsn = TRUE)
+```
