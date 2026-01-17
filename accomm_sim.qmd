@@ -122,6 +122,15 @@ client_timestamps_p1 %>%
 
 
 real_responses |> 
+  select(primary_id = id, 
+         accommodation_name,
+         dependent_count = family_member_count,
+         CreationDate = timestamp,
+         EditDate = timestamp,
+         x,
+         y) |> 
+  mutate(Creator = "",
+         Editor = "") |> 
   # convert back to sf object
   st_as_sf(coords = c("x", "y"), crs = 2157) |> 
   st_transform(4326) -> client_timestamps_sf
