@@ -139,3 +139,108 @@ real_responses |>
 # write to file
 st_write(client_timestamps_sf, "data/client_timestamps_january_2026.geojson", delete_dsn = TRUE)
 ```
+
+# Build the Provider Weekly Returns
+
+```{r provider-returns}
+# build the features that represent the provider locations
+accomm_locations |> 
+  st_as_sf(coords = c("LONGITUDE", "LATITUDE"), crs = 4326) |> 
+  # write to an esri geodatabase
+  st_write(driver = "OpenFileGDB",
+           "C:/R Projects/Innovation_Project/InnKeeper/InnKeeper.gdb/", 
+           layer = "provider_locations", 
+           delete_layer = TRUE)
+
+
+client_timestamps_sf |> 
+  st_set_geometry(NULL) |> 
+  rename(
+    accomm_name = accommodation_name,
+    date = CreationDate) |> 
+  select(primary_id, accomm_name, date, dependent_count) -> df_client
+
+dates <- seq(min(df_client$date), max(df_client$date), by = "day")
+
+p_proxy_absent <- 0.20        # chance an absent day is still reported as present (proxy sign-in)
+p_false_absent <- 0.005       # chance a true present day is mistakenly reported absent (admin error)
+weekly_overstatement_rate <- 0.02  # small systematic weekly uplift (2%)
+
+set.seed(123)
+
+# Ensure date is Date
+df_client <- df_client %>%
+  mutate(date = trunc.Date(date, "days"))
+
+# Define the month window explicitly (optional but recommended)
+# e.g. first to last day in df_client
+dates <- seq(min(df_client$date), max(df_client$date), by = "day")
+
+# 1) Create a "roster" of each primary_id's accommodation (most frequent observed)
+df_client %>%
+  ungroup() |> 
+  summarise(.by = c(primary_id, accomm_name), 
+            n = n(),
+            household_size = mean(dependent_count + 1)) %>%
+  arrange(primary_id, desc(n)) %>%
+  ungroup() %>%
+  select(primary_id, accomm_name, household_size) -> roster
+
+# 2) Build full daily grid (all clients for all days)
+panel <- roster %>%
+  crossing(date = dates)
+
+# 3) Join true presence from client data
+# If a row exists => true persons present = 1 + dependent_count
+panel %>%
+  left_join(df_client %>% select(primary_id, date, dependent_count),
+            by = c("primary_id","date")) %>%
+  mutate(
+    true_present = !is.na(dependent_count),
+    true_persons = ifelse(true_present, 1 + dependent_count, 0)
+  ) -> truth_daily
+
+# Simulate provider daily perception
+truth_daily %>%
+  mutate(
+    p_provider_present = case_when(
+      true_present  ~ 1 - p_false_absent,
+      !true_present ~ p_proxy_absent),
+    provider_present = runif(n()) < p_provider_present,
+    provider_persons = ifelse(provider_present, household_size, 0),
+    week_start = floor_date(date, "week", week_start = 1)
+  ) -> provider_daily 
+
+# Aggregate to weekly provider reports
+provider_daily %>%
+  group_by(accomm_name, week_start) %>%
+  summarise(
+    provider_beddays_raw = sum(provider_persons),
+    provider_households_raw = n_distinct(primary_id[provider_persons > 0]),
+    .groups = "drop"
+  ) -> provider_weekly_raw 
+
+provider_weekly <- provider_weekly_raw %>%
+  mutate(
+    understates_this_week = runif(n()) < 0.15,
+    overstates_this_week = runif(n()) > 0.8,
+
+    discrepency_rate = case_when(
+      understates_this_week ~ rbeta(n(), shape1 = 6, shape2 = 20) * -.15,
+      overstates_this_week ~ rbeta(n(), shape1 = 6, shape2 = 20) * 0.2,  
+      TRUE ~ 0),
+    provider_beddays_reported =
+      provider_beddays_raw +
+      round(provider_beddays_raw * discrepency_rate)
+  ) |> 
+  left_join(accomm_locations |> select(accomm_name, accomm_id)) |>
+  relocate(accomm_id, .before = everything())
+
+mean(provider_weekly$overstates_this_week > 0)
+mean(provider_weekly$understates_this_week > 0)
+
+sum(provider_weekly$provider_beddays_reported) /
+sum(provider_weekly$provider_beddays_raw) - 1
+
+```
+

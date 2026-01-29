@@ -1,7 +1,76 @@
-.Rproj.user
+
+# ─────────────────────────────
+# RStudio / R session artefacts
+# ─────────────────────────────
+.Rproj.user/
 .Rhistory
 .RData
 .Ruserdata
-.httr-oauth
+
+# ─────────────────────────────
+# Package management
+# ─────────────────────────────
+renv/library/
+renv/python/
+renv/staging/
+renv/.cache/
+
+# (DO commit renv.lock)
+!renv.lock
+
+# ─────────────────────────────
+# Quarto / R Markdown outputs
+# ─────────────────────────────
+*_cache/
+*_files/
+.quarto/
+.quarto-cache/
+
+# Rendered outputs (usually regenerated)
+*.html
+*.pdf
+*.docx
+*.pptx
+
+# Keep source, ignore outputs
+!*.qmd
+!*.Rmd
+
+# ─────────────────────────────
+# Data (ignore raw + derived data by default)
+# ─────────────────────────────
+data/
+data-raw/
+outputs/
+results/
+figures/
+
+# Allow small reference data explicitly if needed
+#!data/reference.csv
+
+# ─────────────────────────────
+# Logs & temporary files
+# ─────────────────────────────
+*.log
+*.tmp
+*.bak
+*.swp
+
+# ─────────────────────────────
+# OS / editor noise
+# ─────────────────────────────
 .DS_Store
-.quarto
+Thumbs.db
+desktop.ini
+
+# ─────────────────────────────
+# Python (just in case)
+# ─────────────────────────────
+__pycache__/
+*.py[cod]
+
+# ─────────────────────────────
+# Credentials (never commit)
+# ─────────────────────────────
+.Renviron
+.env
